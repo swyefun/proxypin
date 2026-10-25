@@ -29,8 +29,9 @@ jobs:
       # 需要仓库根的 key.properties + keystore 文件, CI 上生成一次性签名配置
       - name: Create CI signing config
         run: |
+          # key.properties 的 storeFile 相对 android/app 解析, keystore 需生成到 android/app/
           keytool -genkeypair -v \
-            -keystore "$GITHUB_WORKSPACE/android/proxypin-upload.jks" \
+            -keystore "$GITHUB_WORKSPACE/android/app/proxypin-upload.jks" \
             -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass proxypin123 -keypass proxypin123 \
             -dname "CN=ProxyPin CI, OU=ProxyPin, O=ProxyPin, C=CN"
