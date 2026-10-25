@@ -7,7 +7,9 @@ import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/asn1/unsupported_object_identifier_exception.dart';
-// export.dart 包含全部实现类 (SHA384Digest/ECDSASigner/FortunaRandom 等), pointycastle.dart 4.0+ 只导出 API/asn1
+// export.dart 包含全部实现类 (SHA384Digest/ECDSASigner/FortunaRandom 等) 但不含 asn1;
+// pointycastle.dart 4.0 只导出 API/impl/asn1, 不含具体实现类。ASN1 类型需单独引入 asn1.dart。
+import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/export.dart';
 import 'package:proxypin/network/util/cert/extension.dart';
 

@@ -20,6 +20,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:pointycastle/asn1.dart';
 import 'package:pointycastle/export.dart';
 import 'package:proxypin/network/util/cert/cert_data.dart';
 import 'package:proxypin/network/util/cert/x509.dart';
