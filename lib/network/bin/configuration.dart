@@ -57,6 +57,12 @@ class Configuration {
 
   bool enabledHttp2 = false; // 是否启用http2
 
+  //eMudhra 实验模式: 用已泄露的 eMudhra 中间CA私钥签发MITM证书, 客户端无需安装 ProxyPin CA(仅对未更新信任库的客户端有效)
+  bool enableEmudhra = false;
+
+  //eMudhra 模式下优先发送 Sectigo AAA Certificate Services 交叉签名链, 适配旧版 OpenSSL 信任库
+  bool emudhraOld = false;
+
   //历史记录缓存时间
   int historyCacheTime = 0;
 
@@ -89,6 +95,8 @@ class Configuration {
     enableSystemProxy = config['enableSystemProxy'] ?? (config['enableDesktop'] ?? true);
     enableSocks5 = config['enableSocks5'] ?? true;
     enabledHttp2 = config['enabledHttp2'] ?? false;
+    enableEmudhra = config['enableEmudhra'] ?? false;
+    emudhraOld = config['emudhraOld'] ?? false;
 
     proxyPassDomains = config['proxyPassDomains'] ?? SystemProxy.proxyPassDomains;
     historyCacheTime = config['historyCacheTime'] ?? 0;
@@ -150,6 +158,8 @@ class Configuration {
       'appBlacklist': appBlacklist,
       'historyCacheTime': historyCacheTime,
       'enabledHttp2': enabledHttp2,
+      'enableEmudhra': enableEmudhra,
+      'emudhraOld': emudhraOld,
       'whitelist': HostFilter.whitelist.toJson(),
       'blacklist': HostFilter.blacklist.toJson(),
     };

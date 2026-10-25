@@ -2,11 +2,13 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:pointycastle/asn1/unsupported_object_identifier_exception.dart';
-import 'package:pointycastle/pointycastle.dart';
+// export.dart 包含全部实现类 (SHA384Digest/ECDSASigner/FortunaRandom 等), pointycastle.dart 4.0+ 只导出 API/asn1
+import 'package:pointycastle/export.dart';
 import 'package:proxypin/network/util/cert/extension.dart';
 
 import '../crypto.dart';
@@ -134,7 +136,7 @@ class X509Utils {
   ///
   /// Generates a self signed certificate
   ///
-  /// * [privateKey] = The private key used for signing
+  /// * [privateKey] = The private key used for signing (RSA or ECDSA)
   /// * [csr] = The CSR containing the DN and public key
   /// * [days] = The validity in days
   /// * [sans] = Subject alternative names to place within the certificate
@@ -142,10 +144,13 @@ class X509Utils {
   /// * [serialNumber] = The serialnumber. If not set the default will be 1.
   /// * [issuer] = The issuer. If null, the issuer will be the subject of the given csr.
   ///
+  /// ECDSA(P-384) 私钥走 ecdsa-with-SHA384 签发, 叶子公钥为 EC 公钥;
+  /// RSA 私钥保持原有的 sha256WithRSAEncryption 流程不变。
+  ///
   static String generateSelfSignedCertificate(
     X509CertificateData caRoot,
-    RSAPublicKey publicKey,
-    RSAPrivateKey privateKey,
+    PublicKey publicKey,
+    PrivateKey privateKey,
     int days, {
     List<String>? sans,
     String serialNumber = '1',
@@ -169,9 +174,15 @@ class X509Utils {
     data.add(ASN1Integer(BigInt.parse(serialNumber)));
 
     // Add protocol
+    // ECDSA 签发时按 RFC 5754 使用不带参数的 ecdsa-with-SHA384;
+    // RSA 沿用 CA 证书的签名算法并附带 NULL 参数。
     var blockProtocol = ASN1Sequence();
-    blockProtocol.add(ASN1ObjectIdentifier.fromIdentifierString(caRoot.signatureAlgorithm));
-    blockProtocol.add(ASN1Null());
+    if (privateKey is ECPrivateKey) {
+      blockProtocol.add(ASN1ObjectIdentifier.fromIdentifierString(_ecdsaSignatureAlgorithmOid));
+    } else {
+      blockProtocol.add(ASN1ObjectIdentifier.fromIdentifierString(caRoot.signatureAlgorithm));
+      blockProtocol.add(ASN1Null());
+    }
     data.add(blockProtocol);
 
     issuer ??= Map.from(caRoot.subject);
@@ -209,7 +220,8 @@ class X509Utils {
     data.add(subjectSeq);
 
     // Add Public Key
-    data.add(_makePublicKeyBlock(publicKey));
+    data.add(
+        publicKey is ECPublicKey ? _makeECPublicKeyBlock(publicKey) : _makePublicKeyBlock(publicKey as RSAPublicKey));
 
     // Add Extensions
 
@@ -274,7 +286,9 @@ class X509Utils {
     var outer = ASN1Sequence();
     outer.add(data);
     outer.add(blockProtocol);
-    var encode = _rsaSign(data.encode(), privateKey, _getDigestFromOi(caRoot.signatureAlgorithm));
+    var encode = privateKey is ECPrivateKey
+        ? _ecdsaSign(data.encode(), privateKey)
+        : _rsaSign(data.encode(), privateKey as RSAPrivateKey, _getDigestFromOi(caRoot.signatureAlgorithm));
     outer.add(ASN1BitString(stringValues: encode));
 
     var chunks = Strings.chunk(base64Encode(outer.encode()), 64);
@@ -865,6 +879,38 @@ class X509Utils {
   }
 
   ///
+  /// ECDSA(P-384) 签名, 返回符合 X.509 要求的 DER 编码 SEQUENCE{r, s} 。
+  ///
+  static const String _ecdsaSignatureAlgorithmOid = '1.2.840.10045.4.3.3'; //ecdsaWithSHA384
+
+  static Uint8List _ecdsaSign(Uint8List inBytes, ECPrivateKey privateKey) {
+    var signer = ECDSASigner(SHA384Digest());
+    signer.init(
+        true,
+        ParametersWithRandom(
+            PrivateKeyParameter<ECPrivateKey>(privateKey), _newSecureRandom()));
+
+    var signature = signer.generateSignature(inBytes) as ECSignature;
+    var seq = ASN1Sequence(elements: [
+      ASN1Integer(signature.r),
+      ASN1Integer(signature.s),
+    ]);
+    return seq.encode();
+  }
+
+  /// Fortuna 随机源, 种子取自 Random.secure(), 供 ECDSA 生成随机 k
+  static SecureRandom _newSecureRandom() {
+    var seedSource = Random.secure();
+    var seed = Uint8List(32);
+    for (var i = 0; i < seed.length; i++) {
+      seed[i] = seedSource.nextInt(256);
+    }
+    var fortuna = FortunaRandom();
+    fortuna.seed(KeyParameter(seed));
+    return fortuna;
+  }
+
+  ///
   /// Create  the public key ASN1Sequence for the csr.
   ///
   static ASN1Sequence _makePublicKeyBlock(RSAPublicKey publicKey) {
@@ -877,6 +923,24 @@ class X509Utils {
     publicKeySequence.add(ASN1Integer(publicKey.exponent));
 
     var blockPublicKey = ASN1BitString(stringValues: publicKeySequence.encode());
+
+    var outer = ASN1Sequence();
+    outer.add(blockEncryptionType);
+    outer.add(blockPublicKey);
+
+    return outer;
+  }
+
+  ///
+  /// Create the EC public key ASN1Sequence: OID id-ecPublicKey + namedCurve OID,
+  /// public key the uncompressed point
+  ///
+  static ASN1Sequence _makeECPublicKeyBlock(ECPublicKey publicKey) {
+    var blockEncryptionType = ASN1Sequence();
+    blockEncryptionType.add(ASN1ObjectIdentifier.fromIdentifierString('1.2.840.10045.2.1')); //id-ecPublicKey
+    blockEncryptionType.add(ASN1ObjectIdentifier.fromIdentifierString('1.3.132.0.34')); //secp384r1
+
+    var blockPublicKey = ASN1BitString(stringValues: publicKey.Q!.getEncoded(false));
 
     var outer = ASN1Sequence();
     outer.add(blockEncryptionType);

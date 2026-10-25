@@ -56,6 +56,8 @@ class _SslState extends State<SslWidget> {
         },
         menuChildren: [
           _Switch(proxyServer: widget.proxyServer, onEnableChange: (val) => setState(() {})),
+          const Divider(thickness: 0.3, height: 3),
+          _EmudhraMenu(proxyServer: widget.proxyServer),
           item(localizations.installCaLocal,
               onPressed: () => showDialog(context: context, builder: (context) => PCCert())),
           item("${localizations.installRootCa} iOS", onPressed: () async => iosCer(await localIp())),
@@ -395,5 +397,63 @@ class _SwitchState extends State<_Switch> {
                     setState(() {});
                   }))
         ]));
+  }
+}
+
+/// eMudhra 模式(实验): 使用已泄露的 eMudhra 中间 CA 私钥签发拦截证书(mitmproxy --emudhra 同款能力)
+class _EmudhraMenu extends StatefulWidget {
+  final ProxyServer proxyServer;
+
+  const _EmudhraMenu({required this.proxyServer});
+
+  @override
+  State<StatefulWidget> createState() => _EmudhraMenuState();
+}
+
+class _EmudhraMenuState extends State<_EmudhraMenu> {
+  bool get emudhraEnabled => widget.proxyServer.configuration.enableEmudhra;
+
+  @override
+  Widget build(BuildContext context) {
+    return SubmenuButton(menuChildren: [
+      MenuItemButton(
+          onPressed: () {},
+          child: Row(children: [
+            const Padding(
+                padding: EdgeInsets.only(left: 10, right: 5),
+                child: Text('eMudhra CA', style: TextStyle(fontSize: 14))),
+            Transform.scale(
+                scale: 0.8,
+                child: Switch(
+                    hoverColor: Colors.transparent,
+                    value: emudhraEnabled,
+                    onChanged: (val) {
+                      widget.proxyServer.configuration.enableEmudhra = val;
+                      CertificateManager.setEmudhraMode(enabled: val);
+                      widget.proxyServer.configuration.flushConfig();
+                      setState(() {});
+                    }))
+          ])),
+      MenuItemButton(
+          onPressed: () {},
+          child: Row(children: [
+            const Padding(
+                padding: EdgeInsets.only(left: 10, right: 5),
+                child: Text('eMudhra (old TLS)', style: TextStyle(fontSize: 14))),
+            Transform.scale(
+                scale: 0.8,
+                child: Switch(
+                    hoverColor: Colors.transparent,
+                    value: emudhraEnabled && widget.proxyServer.configuration.emudhraOld,
+                    onChanged: emudhraEnabled
+                        ? (val) {
+                            widget.proxyServer.configuration.emudhraOld = val;
+                            CertificateManager.setEmudhraMode(oldFirst: val);
+                            widget.proxyServer.configuration.flushConfig();
+                            setState(() {});
+                          }
+                        : null))
+          ]))
+    ], child: const Padding(padding: EdgeInsets.symmetric(horizontal: 10, vertical: 5), child: Text('eMudhra CA')));
   }
 }

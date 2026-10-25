@@ -21,6 +21,8 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:pointycastle/export.dart';
+import 'package:proxypin/network/bin/configuration.dart';
+import 'package:proxypin/network/util/cert/emudhra.dart';
 import 'package:proxypin/network/util/cert/pkcs12.dart';
 import 'package:proxypin/network/util/cert/x509.dart';
 import 'package:proxypin/network/util/logger.dart';
@@ -49,6 +51,20 @@ class CertificateManager {
   /// 远程服务器真实证书缓存(ssl验证失败时拉取, 用于生成更贴近真实证书的叶子证书)
   static final ExpiringCache<String, X509CertificateData> _remoteCertMap =
       ExpiringCache<String, X509CertificateData>(const Duration(minutes: 15));
+
+  /// eMudhra 模式: 使用已泄露的 eMudhra 中间 CA 私钥签发拦截证书,
+  /// 客户端无需安装 ProxyPin CA(仅对尚未更新信任库的客户端有效)。见 emudhra.dart。
+  static bool emudhraEnabled = false;
+
+  /// eMudhra 模式下优先发送 Sectigo AAA 交叉签名链, 适配旧版 OpenSSL 信任库
+  static bool emudhraOld = false;
+
+  /// 修改 eMudhra 模式并清空证书缓存, 已建立的连接不受影响
+  static void setEmudhraMode({bool? enabled, bool? oldFirst}) {
+    if (enabled != null) emudhraEnabled = enabled;
+    if (oldFirst != null) emudhraOld = oldFirst;
+    cleanCache();
+  }
 
   /// 服务端密钥
   static AsymmetricKeyPair _serverKeyPair = CryptoUtils.generateRSAKeyPair();
@@ -127,6 +143,14 @@ class CertificateManager {
 
   /// 生成域名叶子证书的 [SecurityContext] 并写入缓存
   static SecurityContext _createSecurityContext(String host, {X509CertificateData? remoteCert}) {
+    if (emudhraEnabled) {
+      try {
+        return _emudhraSecurityContext(host, remoteCert: remoteCert);
+      } catch (e, t) {
+        logger.e('eMudhra mode error, fallback to default ca: $host', error: e, stackTrace: t);
+      }
+    }
+
     String cer = generate(_caCert!, _serverKeyPair.publicKey as RSAPublicKey, _caPriKey, host, remoteCert: remoteCert);
     var rsaPrivateKey = _serverKeyPair.privateKey as RSAPrivateKey;
 
@@ -139,8 +163,26 @@ class CertificateManager {
     return securityContext;
   }
 
+  /// eMudhra 分支: 叶子证书由受影响的 eMudhra 中间 CA 私钥签发, 链含两条信任路径(emSign/AAA)
+  static SecurityContext _emudhraSecurityContext(String host, {X509CertificateData? remoteCert}) {
+    var em = EmudhraCA.instance;
+    var leafPem = em.leafCertificatePem(host, remoteCert: remoteCert);
+    var chainPem = em.chainCertificatesPem(leafPem, oldFirst: emudhraOld).join('\r\n');
+
+    var securityContext = SecurityContext(withTrustedRoots: true)
+      ..useCertificateChainBytes(chainPem.codeUnits)
+      ..allowLegacyUnsafeRenegotiation = true
+      ..usePrivateKeyBytes(em.privateKeyPem.codeUnits);
+
+    _certificateMap[host] = securityContext;
+    return securityContext;
+  }
+
   /// 生成域名证书 PEM（仅证书，不含私钥）
   static Future<String> generateLeafCertificatePem(String host) async {
+    if (emudhraEnabled) {
+      return EmudhraCA.instance.leafCertificatePem(host);
+    }
     if (_state != StartState.initialized) {
       await initCAConfig();
     }
@@ -167,37 +209,22 @@ class CertificateManager {
 
     //存在远程真实证书时, 复制其 Subject、SAN、有效期, 以通过客户端严格校验
     if (remoteCert != null) {
-      x509Subject = _remoteSubject(remoteCert) ?? x509Subject;
-      sans = _remoteSans(remoteCert) ?? sans;
+      x509Subject = remoteCertSubject(remoteCert) ?? x509Subject;
+      sans = remoteCertSans(remoteCert) ?? sans;
       notBefore = remoteCert.validity.notBefore;
       notAfter = remoteCert.validity.notAfter;
     }
 
     return X509Utils.generateSelfSignedCertificate(caRoot, serverPubKey, caPriKey, 36,
         sans: sans,
-        serialNumber: Random().nextInt(1000000).toString(),
+        serialNumber: (Random().nextInt(999999) + 1).toString(),
         subject: x509Subject,
         issuerRawBytes: _caSubjectDnBytes,
         notBefore: notBefore,
         notAfter: notAfter);
   }
 
-  /// 提取远程证书的 subject (key 为 OID 字符串, 如 2.5.4.3=CN), 整体替换默认模板避免 CN 重复; 为空返回 null
-  static Map<String, String>? _remoteSubject(X509CertificateData remoteCert) {
-    Map<String, String> subject = {};
-    remoteCert.subject.forEach((key, value) {
-      if (value != null && value.isNotEmpty) {
-        subject[key] = value;
-      }
-    });
-    return subject.isEmpty ? null : subject;
-  }
-
-  /// 提取远程证书的 DNS 类型 SAN, 过滤 DirName 等非 DNS 条目; 为空返回 null
-  static List<String>? _remoteSans(X509CertificateData remoteCert) {
-    var sans = remoteCert.subjectAlternativNames?.where((e) => !e.startsWith('DirName:')).toList();
-    return (sans == null || sans.isEmpty) ? null : sans;
-  }
+  /// 提取远程证书的 subject/SAN 辅助方法见 emudhra.dart 的 [remoteCertSubject] / [remoteCertSans]。
 
   /// 获取证书主题hash
   static Future<String> systemCertificateName() async {
@@ -278,6 +305,11 @@ class CertificateManager {
     _initializationCompleter = Completer<void>();
 
     try {
+      //eMudhra 模式开关
+      var configuration = await Configuration.instance;
+      emudhraEnabled = configuration.enableEmudhra;
+      emudhraOld = configuration.emudhraOld;
+
       _serverKeyPair = CryptoUtils.generateRSAKeyPair();
 
       //从项目目录加入ca根证书

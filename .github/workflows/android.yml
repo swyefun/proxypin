@@ -1,0 +1,55 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # android/app/build.gradle 的 debug/release 均绑定 signingConfigs.release,
+      # 需要仓库根的 key.properties + keystore 文件, CI 上生成一次性签名配置
+      - name: Create CI signing config
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$GITHUB_WORKSPACE/android/proxypin-upload.jks" \
+            -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass proxypin123 -keypass proxypin123 \
+            -dname "CN=ProxyPin CI, OU=ProxyPin, O=ProxyPin, C=CN"
+          cat > "$GITHUB_WORKSPACE/android/key.properties" <<EOF
+          storePassword=proxypin123
+          keyPassword=proxypin123
+          keyAlias=upload
+          storeFile=proxypin-upload.jks
+          EOF
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxypin-apk
+          path: build/app/outputs/**/*.apk
+          if-no-files-found: error

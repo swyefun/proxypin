@@ -87,6 +87,7 @@ class _MobileSslState extends State<MobileSslWidget> {
   @override
   Widget build(BuildContext context) {
     final localizations = AppLocalizations.of(context)!;
+    final isCN = localizations.localeName.startsWith('zh');
     final borderColor = Theme.of(context).dividerColor.withValues(alpha: 0.13);
     final dividerColor = Theme.of(context).dividerColor.withValues(alpha: 0.22);
 
@@ -140,6 +141,42 @@ class _MobileSslState extends State<MobileSslWidget> {
                 title: Text(localizations.clientCertificate),
                 trailing: const Icon(Icons.keyboard_arrow_right),
                 onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MobileClientCertPage()))),
+            Divider(height: 0, thickness: 0.3, color: dividerColor),
+            // eMudhra 模式(实验): 使用已泄露的 eMudhra 中间 CA 私钥签发拦截证书
+            SwitchListTile(
+                hoverColor: Colors.transparent,
+                title: const Text('eMudhra CA'),
+                subtitle: Text(
+                    isCN
+                        ? '用已泄露的 eMudhra 中间CA私钥签发拦截证书, 对仍信任该CA的旧客户端无需安装证书'
+                        : 'Sign interception certs with the compromised eMudhra CA key (clients still trusting it)',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                value: widget.proxyServer.configuration.enableEmudhra,
+                onChanged: (val) {
+                  setState(() {
+                    widget.proxyServer.configuration.enableEmudhra = val;
+                    CertificateManager.setEmudhraMode(enabled: val);
+                    widget.proxyServer.configuration.flushConfig();
+                  });
+                }),
+            SwitchListTile(
+                hoverColor: Colors.transparent,
+                title: const Text('eMudhra (old TLS)'),
+                subtitle: Text(
+                    isCN
+                        ? '优先发送 Sectigo AAA 交叉签名链, 适配只信任旧根的老客户端'
+                        : 'Prioritize the Sectigo AAA cross-sign for older TLS stacks',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
+                value: widget.proxyServer.configuration.enableEmudhra && widget.proxyServer.configuration.emudhraOld,
+                onChanged: widget.proxyServer.configuration.enableEmudhra
+                    ? (val) {
+                        setState(() {
+                          widget.proxyServer.configuration.emudhraOld = val;
+                          CertificateManager.setEmudhraMode(oldFirst: val);
+                          widget.proxyServer.configuration.flushConfig();
+                        });
+                      }
+                    : null),
           ]),
           const SizedBox(height: 12),
           // Export options
