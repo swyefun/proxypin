@@ -55,6 +55,11 @@ add_subdirectory("runner")
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
+
+# VS 18 的 MSVC 14.51+ 对 <experimental/coroutine>(部分插件仍在使用, 如 permission_handler_windows)
+# 触发 STL1011 静态断言导致编译失败, 此处定义官方提供的屏蔽宏。
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 include(flutter/generated_plugins.cmake)
 
 
